@@ -29,7 +29,72 @@ RECIPIENTS = [
 # ── Deduplication ─────────────────────────────────────────────────────────────
 SEEN_DEALS_FILE = "seen_deals.json"
 SPREADSHEET_NAME = "SNAK Weekly Marketplace Deals"
-SHEET_HEADERS = ["Company Name", "Description", "Round", "Funding Amount", "HQ Location"]
+SHEET_HEADERS = [
+    "Company Name",
+    "Description",
+    "Round",
+    "Funding Amount",
+    "HQ Location",
+    "Date",
+    "Source",
+]
+
+# US/Canada HQ filter (safety net after fetch)
+US_STATE_ABBREVS = frozenset(
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
+)
+CA_PROV_ABBREVS = frozenset("AB BC MB NB NL NS NT NU ON PE QC SK YT".split())
+US_STATE_NAMES = frozenset(
+    "alabama alaska arizona arkansas california colorado connecticut delaware florida georgia "
+    "hawaii idaho illinois indiana iowa kansas kentucky louisiana maine maryland massachusetts "
+    "michigan minnesota mississippi missouri montana nebraska nevada new hampshire new jersey "
+    "new mexico new york north carolina north dakota ohio oklahoma oregon pennsylvania rhode island "
+    "south carolina south dakota tennessee texas utah vermont virginia washington west virginia "
+    "wisconsin wyoming district of columbia".split()
+)
+CA_PROV_NAMES = frozenset(
+    "alberta british columbia manitoba new brunswick newfoundland and labrador newfoundland "
+    "nova scotia ontario prince edward island quebec saskatchewan northwest territories nunavut yukon".split()
+)
+MAJOR_US_CITIES = frozenset(
+    "new york los angeles chicago houston phoenix philadelphia san antonio san diego dallas san jose "
+    "austin jacksonville fort worth columbus charlotte san francisco indianapolis seattle denver "
+    "washington boston nashville detroit portland las vegas memphis louisville milwaukee baltimore "
+    "albuquerque tucson fresno sacramento kansas city atlanta miami oakland minneapolis cleveland "
+    "tampa pittsburgh cincinnati saint louis st. louis pittsburgh orlando".split()
+)
+
+
+def hq_looks_us_or_canada(hq: str) -> bool:
+    """True if hq_location plausibly indicates US or Canada; empty/unknown keeps the deal."""
+    raw = (hq or "").strip()
+    if not raw:
+        return True
+
+    low = raw.lower()
+    if "canada" in low or "canadian" in low:
+        return True
+    if "united states" in low or re.search(r"\b(?:usa|u\.s\.a?\.)\b", low):
+        return True
+
+    for prov in CA_PROV_NAMES:
+        if prov in low:
+            return True
+
+    for state in US_STATE_NAMES:
+        if re.search(r"\b" + re.escape(state) + r"\b", low):
+            return True
+
+    for city in MAJOR_US_CITIES:
+        if city in low:
+            return True
+
+    for m in re.finditer(r",\s*([a-z]{2})\b", low):
+        ab = m.group(1).upper()
+        if ab in US_STATE_ABBREVS or ab in CA_PROV_ABBREVS:
+            return True
+
+    return False
 
 
 def load_seen_deals() -> set[str]:
@@ -163,6 +228,10 @@ def _safe_url(url: str) -> str:
     return u
 
 
+def _escape_formula_str(s: str) -> str:
+    return (s or "").replace('"', '""')
+
+
 def write_deals_to_sheet(worksheet, deals: list[dict], seen: set[str]):
     rows = []
     for d in deals or []:
@@ -172,8 +241,9 @@ def write_deals_to_sheet(worksheet, deals: list[dict], seen: set[str]):
         name = str(d.get("company", "") or "").strip()
         website_url = _safe_url(str(d.get("website_url", "") or ""))
         if website_url and name:
-            safe_name = name.replace('"', '""')
-            company_cell = f'=HYPERLINK("{website_url}","{safe_name}")'
+            safe_url = _escape_formula_str(website_url)
+            safe_name = _escape_formula_str(name)
+            company_cell = f'=HYPERLINK("{safe_url}","{safe_name}")'
         else:
             company_cell = name
 
@@ -181,8 +251,28 @@ def write_deals_to_sheet(worksheet, deals: list[dict], seen: set[str]):
         round_norm = _normalize_round(d.get("round", ""))
         amount_disp = parse_amount(str(d.get("amount", "") or ""))
         hq = " ".join(str(d.get("hq_location", "") or "").strip().split())
+        announced = " ".join(str(d.get("announced_date", "") or "").strip().split())
 
-        rows.append([company_cell, description, round_norm, amount_disp, hq])
+        source_name = str(d.get("source", "") or "").strip()
+        source_url = _safe_url(str(d.get("source_url", "") or ""))
+        if source_url and source_name:
+            safe_surl = _escape_formula_str(source_url)
+            safe_src = _escape_formula_str(source_name)
+            source_cell = f'=HYPERLINK("{safe_surl}","{safe_src}")'
+        else:
+            source_cell = source_name
+
+        rows.append(
+            [
+                company_cell,
+                description,
+                round_norm,
+                amount_disp,
+                hq,
+                announced,
+                source_cell,
+            ]
+        )
 
     if rows:
         worksheet.insert_rows(rows, row=2, value_input_option="USER_ENTERED")
@@ -222,6 +312,8 @@ Sources: TechCrunch, The Information, Forbes, WSJ, NY Times, and company press r
 
 CRITICAL: Only include deals where the news article was published within the last 7 days.
 Never fabricate companies or deals.
+
+Only include companies headquartered in the United States or Canada. Do not include deals from other countries. Include companies if you are not sure. Use common sense, if operations in a non-US or Canada company are mentioned in press it is probably not based in US or Canada.
 
 For each deal, include:
 - website_url: the company's homepage URL (not an article URL)
@@ -522,6 +614,12 @@ if __name__ == "__main__":
     print(f"🔍  Fetching marketplace deals for {DATE_RANGE} …")
     data = fetch_deals()
     print(f"📦  Found {data.get('total_deals', 0)} deals · {data.get('total_capital', 'N/A')} total capital")
+
+    geo_filtered = [
+        d for d in (data.get("deals", []) or []) if hq_looks_us_or_canada(str(d.get("hq_location", "") or ""))
+    ]
+    data["deals"] = geo_filtered
+    data["total_deals"] = len(geo_filtered)
 
     seen = load_seen_deals()
     original_deals = data.get("deals", []) or []
