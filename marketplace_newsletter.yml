@@ -1,0 +1,39 @@
+name: Snak.vc — Marketplace Funding Weekly
+
+on:
+  schedule:
+    # Every Sunday at 12:00 UTC (8:00 AM ET)
+    - cron: "0 12 * * 0"
+  workflow_dispatch:   # ← lets you trigger a test run manually from GitHub
+
+jobs:
+  send-newsletter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Generate & send newsletter
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS:     ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python scripts/generate_and_send.py
+
+      - name: Upload HTML preview as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-preview-${{ github.run_id }}
+          path: newsletter_preview.html
+          retention-days: 14
