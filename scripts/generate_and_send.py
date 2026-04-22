@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Snak.vc — Weekly Marketplace Funding Newsletter
+SNAK — Weekly Marketplace Funding Newsletter
 Calls Claude API (with web search), generates branded HTML, sends via Gmail SMTP.
 """
 
@@ -23,7 +23,7 @@ from googleapiclient.discovery import build
 # ── Recipients ───────────────────────────────────────────────────────────────
 RECIPIENTS = [
     "sonia@snak.vc",          # ← replace with real addresses
-#    "adam@snak.vc",
+    "adam@snak.vc",
 ]
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
