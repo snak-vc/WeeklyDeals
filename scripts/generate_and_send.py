@@ -175,9 +175,13 @@ def get_or_create_sheet():
 
     worksheet = spreadsheet.sheet1
     existing = worksheet.row_values(1)
-    if [c.strip() for c in existing if c.strip()] != SHEET_HEADERS:
-        worksheet.clear()
-        worksheet.append_row(SHEET_HEADERS, value_input_option="RAW")
+    row1_nonempty = [c.strip() for c in existing if c.strip()]
+    if row1_nonempty != SHEET_HEADERS:
+        # Never clear or delete rows: only append or insert a header row so history stays intact.
+        if not row1_nonempty:
+            worksheet.append_row(SHEET_HEADERS, value_input_option="RAW")
+        else:
+            worksheet.insert_rows([SHEET_HEADERS], row=1, value_input_option="RAW")
         worksheet.freeze(rows=1)
         worksheet.format("1:1", {"textFormat": {"bold": True}})
 
@@ -230,6 +234,7 @@ def _escape_formula_str(s: str) -> str:
 
 
 def write_deals_to_sheet(worksheet, deals: list[dict], seen: set[str]):
+    """Append-only: insert new deal rows at row 2. Does not clear, delete, or overwrite existing rows."""
     rows = []
     for d in deals or []:
         if make_deal_key(d) in seen:
