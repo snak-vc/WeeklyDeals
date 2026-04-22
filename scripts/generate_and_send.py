@@ -8,16 +8,185 @@ import os
 import json
 import smtplib
 import re
+import sys
+import pickle
+import base64
+import urllib.parse
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import anthropic
+import gspread
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 # ── Recipients ───────────────────────────────────────────────────────────────
 RECIPIENTS = [
     "sonia@snak.vc",          # ← replace with real addresses
 #    "adam@snak.vc",
 ]
+
+# ── Deduplication ─────────────────────────────────────────────────────────────
+SEEN_DEALS_FILE = "seen_deals.json"
+SPREADSHEET_NAME = "SNAK Weekly Marketplace Deals"
+SHEET_HEADERS = ["Company Name", "Description", "Round", "Funding Amount", "HQ Location"]
+
+
+def load_seen_deals() -> set[str]:
+    if not os.path.exists(SEEN_DEALS_FILE):
+        return set()
+    try:
+        with open(SEEN_DEALS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return {str(x) for x in data}
+    except (OSError, json.JSONDecodeError):
+        pass
+    return set()
+
+
+def save_seen_deals(seen: set[str]) -> None:
+    with open(SEEN_DEALS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(seen), f, indent=2)
+        f.write("\n")
+
+
+def make_deal_key(deal: dict) -> str:
+    def norm(v: object) -> str:
+        return " ".join(str(v or "").lower().split())
+
+    company = norm(deal.get("company"))
+    amount = norm(deal.get("amount"))
+    round_ = norm(deal.get("round"))
+    return f"{company}|{amount}|{round_}"
+
+
+def parse_amount(amount_str: str) -> str:
+    if not amount_str:
+        return amount_str
+
+    s = str(amount_str).strip()
+    s_clean = s.replace("$", "").replace(",", "").strip()
+    if not s_clean:
+        return amount_str
+
+    suffix = ""
+    if s_clean and s_clean[-1].isalpha():
+        suffix = s_clean[-1].lower()
+        s_clean = s_clean[:-1].strip()
+
+    try:
+        num = float(s_clean)
+    except ValueError:
+        return amount_str
+
+    multiplier = {"": 1.0, "k": 1_000.0, "m": 1_000_000.0, "b": 1_000_000_000.0}.get(suffix)
+    if multiplier is None:
+        return amount_str
+
+    dollars = num * multiplier
+    if dollars < 500_000:
+        return f"${int(round(dollars / 1_000.0)):d}k"
+
+    millions = dollars / 1_000_000.0
+    return f"${millions:,.1f}M"
+
+
+def get_google_credentials() -> Credentials:
+    token_b64 = os.environ["GOOGLE_TOKEN_PICKLE"]
+    raw = base64.b64decode(token_b64)
+    creds = pickle.loads(raw)
+    return creds
+
+
+def get_or_create_sheet():
+    creds = get_google_credentials()
+
+    # Keep explicit service available (useful for future formatting/metadata)
+    _sheets_service = build("sheets", "v4", credentials=creds)  # noqa: F841
+
+    client = gspread.authorize(creds)
+    try:
+        spreadsheet = client.open(SPREADSHEET_NAME)
+    except gspread.SpreadsheetNotFound:
+        spreadsheet = client.create(SPREADSHEET_NAME)
+
+    worksheet = spreadsheet.sheet1
+    existing = worksheet.row_values(1)
+    if [c.strip() for c in existing if c.strip()] != SHEET_HEADERS:
+        worksheet.clear()
+        worksheet.append_row(SHEET_HEADERS, value_input_option="RAW")
+        worksheet.freeze(rows=1)
+        worksheet.format("1:1", {"textFormat": {"bold": True}})
+
+    return worksheet
+
+
+def _normalize_round(round_str: str) -> str:
+    r = " ".join(str(round_str or "").strip().split()).lower()
+    if not r:
+        return ""
+    if "pre" in r and "seed" in r:
+        return "Pre-Seed"
+    if r == "seed" or " seed" in r or r.endswith("seed"):
+        return "Seed"
+    for letter in ["a", "b", "c"]:
+        if f"series {letter}" in r or f"serie {letter}" in r:
+            return f"Series {letter.upper()}"
+    if "growth" in r or "late" in r:
+        return "Growth"
+    if "m&a" in r or "acqui" in r or "acquisition" in r or "merge" in r:
+        return "M&A"
+    if "ipo" in r:
+        return "IPO"
+    return round_str
+
+
+def _truncate_sentences(text: str, max_sentences: int = 3) -> str:
+    t = " ".join(str(text or "").split())
+    if not t:
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", t)
+    return " ".join(parts[:max_sentences]).strip()
+
+
+def _safe_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    parsed = urllib.parse.urlparse(u)
+    if not parsed.scheme:
+        u = "https://" + u
+        parsed = urllib.parse.urlparse(u)
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+    return u
+
+
+def write_deals_to_sheet(worksheet, deals: list[dict], seen: set[str]):
+    rows = []
+    for d in deals or []:
+        if make_deal_key(d) in seen:
+            continue
+
+        name = str(d.get("company", "") or "").strip()
+        website_url = _safe_url(str(d.get("website_url", "") or ""))
+        if website_url and name:
+            safe_name = name.replace('"', '""')
+            company_cell = f'=HYPERLINK("{website_url}","{safe_name}")'
+        else:
+            company_cell = name
+
+        description = _truncate_sentences(d.get("description", ""), 3)
+        round_norm = _normalize_round(d.get("round", ""))
+        amount_disp = parse_amount(str(d.get("amount", "") or ""))
+        hq = " ".join(str(d.get("hq_location", "") or "").strip().split())
+
+        rows.append([company_cell, description, round_norm, amount_disp, hq])
+
+    if rows:
+        worksheet.insert_rows(rows, row=2, value_input_option="USER_ENTERED")
+
 
 # ── Snak brand ───────────────────────────────────────────────────────────────
 BRAND_COLOR   = "#385892"
@@ -54,6 +223,10 @@ Sources: TechCrunch, The Information, Forbes, WSJ, NY Times, and company press r
 CRITICAL: Only include deals where the news article was published within the last 7 days.
 Never fabricate companies or deals.
 
+For each deal, include:
+- website_url: the company's homepage URL (not an article URL)
+- hq_location: headquarters location in "City, State" (or "City, Country" for international)
+
 Return ONLY valid JSON — no markdown fences, no preamble:
 {
   "week_ending": "April 27, 2025",
@@ -66,6 +239,8 @@ Return ONLY valid JSON — no markdown fences, no preamble:
       "amount": "$50M",
       "round": "Series B",
       "category": "B2B Marketplace",
+      "website_url": "https://acmemarkets.com",
+      "hq_location": "San Francisco, CA",
       "description": "One sentence on what the company does.",
       "why_it_matters": "One sentence on the significance of this deal.",
       "notable_investors": ["Andreessen Horowitz", "Sequoia"],
@@ -124,12 +299,6 @@ def build_html(data: dict) -> str:
           <div style="background:#fff;border:1px solid #dce6f5;border-radius:10px;padding:14px 24px;display:inline-block;min-width:120px">
             <div style="font-size:26px;font-weight:800;color:{BRAND_COLOR};font-family:Georgia,serif">{total}</div>
             <div style="font-size:11px;color:#8a9ab5;text-transform:uppercase;letter-spacing:1px;margin-top:2px">Deals Found</div>
-          </div>
-        </td>
-        <td align="center" style="padding:0 8px">
-          <div style="background:#fff;border:1px solid #dce6f5;border-radius:10px;padding:14px 24px;display:inline-block;min-width:120px">
-            <div style="font-size:26px;font-weight:800;color:{ACCENT_GREEN};font-family:Georgia,serif">{capital}</div>
-            <div style="font-size:11px;color:#8a9ab5;text-transform:uppercase;letter-spacing:1px;margin-top:2px">Total Capital</div>
           </div>
         </td>
         <td align="center" style="padding:0 8px">
@@ -336,7 +505,7 @@ def send_email(html: str):
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = SUBJECT
-    msg["From"]    = f"Snak.vc Research <{sender}>"
+    msg["From"]    = f"SNAK Research <{sender}>"
     msg["To"]      = ", ".join(RECIPIENTS)
 
     msg.attach(MIMEText(html, "html"))
@@ -354,6 +523,18 @@ if __name__ == "__main__":
     data = fetch_deals()
     print(f"📦  Found {data.get('total_deals', 0)} deals · {data.get('total_capital', 'N/A')} total capital")
 
+    seen = load_seen_deals()
+    original_deals = data.get("deals", []) or []
+    new_deals = [d for d in original_deals if make_deal_key(d) not in seen]
+    data["deals"] = new_deals
+    data["total_deals"] = len(new_deals)
+
+    if not new_deals:
+        print("No new deals this week")
+        if not os.path.exists(SEEN_DEALS_FILE):
+            save_seen_deals(seen)
+        sys.exit(0)
+
     html = build_html(data)
 
     # Save a local copy for debugging / preview
@@ -362,3 +543,10 @@ if __name__ == "__main__":
     print("💾  Preview saved → newsletter_preview.html")
 
     send_email(html)
+
+    worksheet = get_or_create_sheet()
+    write_deals_to_sheet(worksheet, new_deals, seen)
+
+    for d in new_deals:
+        seen.add(make_deal_key(d))
+    save_seen_deals(seen)

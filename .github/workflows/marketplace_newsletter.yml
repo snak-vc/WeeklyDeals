@@ -10,6 +10,8 @@ jobs:
   send-newsletter:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -21,14 +23,23 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install anthropic
+        run: pip install anthropic gspread google-auth google-api-python-client
 
       - name: Generate & send newsletter
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS:     ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GOOGLE_TOKEN_PICKLE: ${{ secrets.GOOGLE_TOKEN_PICKLE }}
         run: python scripts/generate_and_send.py
+
+      - name: Commit updated seen_deals.json
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add seen_deals.json
+          git diff --staged --quiet || git commit -m "Update seen deals log [skip ci]"
+          git push
 
       - name: Upload HTML preview as artifact
         if: always()
