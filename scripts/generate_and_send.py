@@ -40,7 +40,7 @@ STAGE_ORDER = ["IPO / M&A", "Growth", "Early", "Pre-Seed / Seed"]
 today      = datetime.now()
 week_start = today - timedelta(days=7)
 DATE_RANGE = f"{week_start.strftime('%B %d')} – {today.strftime('%B %d, %Y')}"
-SUBJECT    = f"🏪 Snak.vc | Marketplace Funding Weekly · {today.strftime('%b %d, %Y')}"
+SUBJECT    = f"💰 SNAK | Weekly Marketplace Funding · {today.strftime('%b %d, %Y')}"
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM = """You are a venture capital research analyst for Snak.vc, a firm focused on marketplace businesses.
@@ -111,6 +111,7 @@ def build_html(data: dict) -> str:
     deals      = data.get("deals", [])
     total      = data.get("total_deals", len(deals))
     capital    = data.get("total_capital", "N/A")
+    week_ending = data.get("week_ending") or today.strftime("%B %d, %Y")
 
     # Group by stage
     grouped = {s: [d for d in deals if d.get("stage") == s] for s in STAGE_ORDER}
@@ -257,32 +258,36 @@ def build_html(data: dict) -> str:
 
           <!-- ── HEADER ───────────────────────────────────────────────────── -->
           <tr>
-            <td style="background:linear-gradient(135deg,{BRAND_DARK} 0%,{BRAND_COLOR} 60%,{BRAND_LIGHT} 100%);
-                        padding:36px 40px 28px;border-radius:14px 14px 0 0">
-              <!-- logo row -->
-              <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px">
+            <td style="background:#ffffff;padding:16px 24px 14px;border-radius:14px 14px 0 0;border-bottom:1px solid #dce6f5">
+              <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
-                  <td>
-                    <span style="font-family:Georgia,serif;font-size:26px;font-weight:900;
-                                 color:#fff;letter-spacing:-0.5px">snak<span style="color:#a8c4e8">.vc</span></span>
+                  <td style="vertical-align:top">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:800;letter-spacing:3px;text-transform:uppercase;color:#0f172a;line-height:1.1">
+                      SNAK
+                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:10px;font-weight:300;letter-spacing:1.6px;text-transform:uppercase;color:#6b7280;line-height:1.2;margin-top:4px">
+                      Venture Partners
+                    </div>
                   </td>
-                  <td align="right">
-                    <span style="background:rgba(255,255,255,0.15);color:#d0e0f5;
-                                 font-family:monospace;font-size:10px;letter-spacing:1px;
-                                 text-transform:uppercase;padding:4px 12px;border-radius:20px">
-                      Weekly Intel
-                    </span>
+                  <td align="right" style="vertical-align:top;text-align:right">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:800;letter-spacing:2.4px;text-transform:uppercase;color:#0f172a;line-height:1.1">
+                      Marketplace Funding Weekly
+                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:400;color:#334155;line-height:1.2;margin-top:6px">
+                      {week_ending}
+                    </div>
                   </td>
                 </tr>
               </table>
-              <!-- headline -->
-              <h1 style="margin:0 0 6px;font-family:Georgia,serif;font-size:28px;font-weight:900;
-                          color:#fff;letter-spacing:-0.5px;line-height:1.15">
-                Marketplace Funding<br>Activity
-              </h1>
-              <p style="margin:0;font-family:monospace;font-size:12px;color:#a8c4e8;letter-spacing:0.5px">
-                {DATE_RANGE}
-              </p>
+            </td>
+          </tr>
+
+          <!-- ── HEADER BANNER ─────────────────────────────────────────────── -->
+          <tr>
+            <td style="background:{BRAND_COLOR};padding:10px 24px;border-bottom:1px solid #dce6f5">
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:800;letter-spacing:2.6px;text-transform:uppercase;color:#ffffff;line-height:1.1">
+                Weekly Funding Report
+              </div>
             </td>
           </tr>
 
