@@ -102,12 +102,9 @@ def load_seen_deals() -> set[str]:
         return set()
     try:
         with open(SEEN_DEALS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return {str(x) for x in data}
-    except (OSError, json.JSONDecodeError):
-        pass
-    return set()
+            return set(json.load(f))
+    except Exception:
+        return set()
 
 
 def save_seen_deals(seen: set[str]) -> None:
