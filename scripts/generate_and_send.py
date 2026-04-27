@@ -13,6 +13,8 @@ import pickle
 import base64
 import urllib.parse
 import xml.etree.ElementTree as ET
+import imaplib
+import email
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -607,6 +609,123 @@ def fetch_deals() -> dict:
     return json.loads(match.group(0))
 
 
+def fetch_crunchbase_email_deals() -> list[str]:
+    """
+    Read recent Crunchbase alert emails and extract company names from /organization/ links.
+    Returns a list of de-duplicated, title-cased company names.
+    """
+    try:
+        user = os.environ["GMAIL_ADDRESS"]
+        password = os.environ["GMAIL_APP_PASSWORD"]
+
+        since_dt = datetime.utcnow() - timedelta(days=2)
+        since_str = since_dt.strftime("%d-%b-%Y")
+
+        org_slugs: set[str] = set()
+
+        with imaplib.IMAP4_SSL("imap.gmail.com", 993) as imap:
+            imap.login(user, password)
+            imap.select("INBOX")
+
+            # Use quoted criteria to match IMAP search semantics
+            criteria = f'(FROM "no-reply@crunchbase.com" SINCE "{since_str}")'
+            status, data = imap.search(None, criteria)
+            if status != "OK":
+                return []
+
+            msg_ids = (data[0] or b"").split()
+            for mid in msg_ids:
+                status, msg_data = imap.fetch(mid, "(RFC822)")
+                if status != "OK" or not msg_data:
+                    continue
+
+                raw = msg_data[0][1]
+                msg = email.message_from_bytes(raw)
+
+                html_parts: list[str] = []
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        ctype = (part.get_content_type() or "").lower()
+                        if ctype != "text/html":
+                            continue
+                        payload = part.get_payload(decode=True) or b""
+                        charset = part.get_content_charset() or "utf-8"
+                        try:
+                            html_parts.append(payload.decode(charset, errors="replace"))
+                        except Exception:
+                            html_parts.append(payload.decode("utf-8", errors="replace"))
+                else:
+                    ctype = (msg.get_content_type() or "").lower()
+                    if ctype == "text/html":
+                        payload = msg.get_payload(decode=True) or b""
+                        charset = msg.get_content_charset() or "utf-8"
+                        try:
+                            html_parts.append(payload.decode(charset, errors="replace"))
+                        except Exception:
+                            html_parts.append(payload.decode("utf-8", errors="replace"))
+
+                html_text = "\n".join(html_parts)
+                if not html_text:
+                    continue
+
+                # Extract organization slugs from Crunchbase URLs
+                for m in re.finditer(r"https?://www\.crunchbase\.com/organization/([a-z0-9-]+)", html_text, re.I):
+                    org_slugs.add(m.group(1).lower())
+
+                # Also handle relative links like href="/organization/foo"
+                for m in re.finditer(r'href=[\'"]/organization/([a-z0-9-]+)', html_text, re.I):
+                    org_slugs.add(m.group(1).lower())
+
+        names = []
+        for slug in sorted(org_slugs):
+            name = slug.replace("-", " ").strip()
+            if not name:
+                continue
+            names.append(name.title())
+        return names
+    except Exception as e:
+        print(f"⚠️  Warning: Crunchbase IMAP fetch failed ({e}). Continuing without Crunchbase email deals.")
+        return []
+
+
+def enrich_crunchbase_companies(company_names: list[str]) -> list[dict]:
+    if not company_names:
+        return []
+
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    names = company_names[:50]
+
+    user_msg = (
+        "For each of these companies, search the web to find their most recent funding round announced in the last 7 days. "
+        "Return only companies where you can confirm a funding announcement in the last 7 days. "
+        "Only include companies headquartered in the United States or Canada. "
+        "Return ONLY valid JSON (no markdown), shaped like: {\"deals\": [...]} where each deal includes fields: "
+        "company, stage, amount, round, category, description, why_it_matters, notable_investors, source, source_url, "
+        "announced_date, website_url, hq_location.\n\n"
+        "Companies:\n"
+        + "\n".join(f"- {n}" for n in names)
+    )
+
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=4000,
+        system="You are a venture capital research analyst. Return only valid JSON.",
+        tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        messages=[{"role": "user", "content": user_msg}],
+    )
+
+    full_text = "".join(b.text for b in response.content if hasattr(b, "text"))
+    match = re.search(r"\{[\s\S]*\}", full_text)
+    if not match:
+        return []
+
+    data = json.loads(match.group(0))
+    deals = data.get("deals", []) or []
+    if not isinstance(deals, list):
+        return []
+    return deals
+
+
 # ── 2. Build HTML email ───────────────────────────────────────────────────────
 def build_html(data: dict) -> str:
     deals      = data.get("deals", [])
@@ -853,6 +972,14 @@ if __name__ == "__main__":
     if edgar_deals:
         data["deals"] = (data.get("deals", []) or []) + edgar_deals
         data["total_deals"] = len(data["deals"])
+
+    crunchbase_companies = fetch_crunchbase_email_deals()
+    print(f"📧  Crunchbase email companies found: {len(crunchbase_companies)}")
+    if crunchbase_companies:
+        crunchbase_deals = enrich_crunchbase_companies(crunchbase_companies)
+        if crunchbase_deals:
+            data["deals"] = (data.get("deals", []) or []) + crunchbase_deals
+            data["total_deals"] = len(data["deals"])
 
     geo_filtered = [
         d for d in (data.get("deals", []) or []) if hq_looks_us_or_canada(str(d.get("hq_location", "") or ""))

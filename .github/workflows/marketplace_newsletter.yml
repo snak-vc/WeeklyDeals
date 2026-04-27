@@ -2,8 +2,8 @@ name: Snak.vc — Marketplace Funding Weekly
 
 on:
   schedule:
-    # Every Sunday at 12:00 UTC (8:00 AM ET)
-    - cron: "0 12 * * 0"
+    # Every Monday at 18:00 UTC (2:00 PM ET)
+    - cron: "0 18 * * 1"
   workflow_dispatch:   # ← lets you trigger a test run manually from GitHub
 
 jobs:
