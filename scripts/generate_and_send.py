@@ -12,6 +12,7 @@ import sys
 import pickle
 import base64
 import urllib.parse
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -19,6 +20,7 @@ import anthropic
 import gspread
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+import requests
 
 # ── Recipients ───────────────────────────────────────────────────────────────
 RECIPIENTS = [
@@ -95,6 +97,230 @@ def hq_looks_us_or_canada(hq: str) -> bool:
             return True
 
     return False
+
+
+def _dollars_to_display(dollars: float) -> str:
+    if dollars <= 0:
+        return ""
+    if dollars < 500_000:
+        return f"${int(round(dollars / 1_000.0)):d}k"
+    return f"${(dollars / 1_000_000.0):,.1f}M"
+
+
+def _hq_looks_us_only(hq: str) -> bool:
+    raw = (hq or "").strip()
+    if not raw:
+        return False
+    low = raw.lower()
+    if "canada" in low or "canadian" in low:
+        return False
+    if "united states" in low or re.search(r"\b(?:usa|u\.s\.a?\.)\b", low):
+        return True
+    for state in US_STATE_NAMES:
+        if re.search(r"\b" + re.escape(state) + r"\b", low):
+            return True
+    for m in re.finditer(r",\s*([a-z]{2})\b", low):
+        if m.group(1).upper() in US_STATE_ABBREVS:
+            return True
+    return False
+
+
+def _sec_get_json(url: str, session: requests.Session) -> dict:
+    r = session.get(url, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _sec_get_text(url: str, session: requests.Session) -> str:
+    r = session.get(url, timeout=20)
+    r.raise_for_status()
+    return r.text
+
+
+def _extract_formd_fields_from_xml(xml_text: str) -> dict:
+    """
+    Best-effort parse for Form D XML fields:
+    - total amount sold (preferred) or total offering amount
+    - issuer city/state/country
+    - security type (for SAFE vs Seed heuristic)
+    """
+
+    def find_text_any(paths: list[str]) -> str:
+        for p in paths:
+            el = root.find(".//" + p)
+            if el is not None and (el.text or "").strip():
+                return (el.text or "").strip()
+        return ""
+
+    root = ET.fromstring(xml_text)
+
+    total_sold = find_text_any(["totalAmountSold", "total_amount_sold"])
+    total_offering = find_text_any(["totalOfferingAmount", "total_offering_amount"])
+    type_sec = find_text_any(["typeOfSecurity", "type_of_security"])
+
+    city = find_text_any(["issuerAddress/issuerCity", "issuerAddress/city", "issuerCity", "city"])
+    state_or_country = find_text_any(
+        [
+            "issuerAddress/issuerStateOrCountry",
+            "issuerAddress/stateOrCountry",
+            "issuerStateOrCountry",
+            "stateOrCountry",
+        ]
+    )
+    state_desc = find_text_any(
+        [
+            "issuerAddress/issuerStateOrCountryDescription",
+            "issuerStateOrCountryDescription",
+            "stateOrCountryDescription",
+        ]
+    )
+
+    def to_float(s: str) -> float:
+        try:
+            return float(str(s).replace("$", "").replace(",", "").strip())
+        except Exception:
+            return 0.0
+
+    return {
+        "total_amount_sold": to_float(total_sold),
+        "total_offering_amount": to_float(total_offering),
+        "type_of_security": type_sec,
+        "hq_city": (city or "").strip(),
+        "hq_state_or_country": (state_or_country or state_desc or "").strip(),
+    }
+
+
+def fetch_edgar_deals() -> list[dict]:
+    """
+    Pull recent Form D filings via SEC EDGAR full-text search.
+    Returns deal dicts shaped like Claude deals. Best-effort; failures return [].
+    """
+    try:
+        session = requests.Session()
+        session.headers.update({"User-Agent": "snak.vc sonia@snak.vc"})
+
+        start = week_start.strftime("%Y-%m-%d")
+        end = today.strftime("%Y-%m-%d")
+
+        base = "https://efts.sec.gov/LATEST/search-index"
+        queries = ['"marketplace"', '"platform"']
+
+        hits: list[dict] = []
+        for q in queries:
+            url = f"{base}?q={urllib.parse.quote(q)}&dateRange=custom&startdt={start}&enddt={end}&forms=D"
+            data = _sec_get_json(url, session)
+            hits.extend((data.get("hits", {}) or {}).get("hits", []) or [])
+
+        seen_hit_ids: set[str] = set()
+        unique_hits: list[dict] = []
+        for h in hits:
+            hid = str(h.get("_id") or "")
+            if hid and hid in seen_hit_ids:
+                continue
+            if hid:
+                seen_hit_ids.add(hid)
+            unique_hits.append(h)
+
+        deals: list[dict] = []
+        for hit in unique_hits:
+            src = hit.get("_source", {}) or {}
+            company = (src.get("entity_name") or "").strip()
+            file_date = (src.get("file_date") or "").strip()
+            period = (src.get("period_of_report") or "").strip()
+
+            cik_raw = src.get("cik") or src.get("cik_number") or src.get("cikNum") or ""
+            try:
+                cik_int = int(str(cik_raw).lstrip("0") or "0")
+            except Exception:
+                cik_int = 0
+
+            accession = src.get("adsh") or src.get("accession_number") or hit.get("_id") or ""
+            accession = str(accession).strip()
+            accession_nodash = accession.replace("-", "")
+
+            source_url = ""
+            if cik_int and accession_nodash:
+                source_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodash}/index.html"
+
+            amount_display = ""
+            hq_location = ""
+            sec_type = ""
+
+            if cik_int and accession_nodash:
+                try:
+                    index_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodash}/index.json"
+                    index = _sec_get_json(index_url, session)
+                    items = ((index.get("directory") or {}).get("item")) or []
+                    xml_names = [
+                        (it.get("name") or "").strip()
+                        for it in items
+                        if isinstance(it, dict) and str(it.get("name") or "").lower().endswith(".xml")
+                    ]
+
+                    preferred = ""
+                    for cand in xml_names:
+                        if "primary" in cand.lower():
+                            preferred = cand
+                            break
+                    xml_name = preferred or (xml_names[0] if xml_names else "")
+
+                    if xml_name:
+                        xml_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodash}/{xml_name}"
+                        xml_text = _sec_get_text(xml_url, session)
+                        parsed = _extract_formd_fields_from_xml(xml_text)
+
+                        dollars = float(parsed.get("total_amount_sold") or 0.0)
+                        if dollars <= 0:
+                            dollars = float(parsed.get("total_offering_amount") or 0.0)
+                        amount_display = _dollars_to_display(dollars)
+
+                        city = parsed.get("hq_city") or ""
+                        st = parsed.get("hq_state_or_country") or ""
+                        if city and st:
+                            hq_location = f"{city}, {st}"
+                        else:
+                            hq_location = st or city
+
+                        sec_type = parsed.get("type_of_security") or ""
+                except Exception:
+                    pass
+
+            # Only include filings where total amount sold > 0
+            if not amount_display:
+                continue
+
+            # Only include US-based companies
+            if not _hq_looks_us_only(hq_location):
+                continue
+
+            round_name = "SAFE" if "safe" in sec_type.lower() else "Seed"
+            announced = file_date or period
+
+            deals.append(
+                {
+                    "company": company or "Unknown",
+                    "stage": "Pre-Seed / Seed",
+                    "amount": amount_display,
+                    "round": round_name,
+                    "category": "Marketplace",
+                    "description": f"{company or 'A company'} filed a Form D with the SEC.",
+                    "why_it_matters": "Early-stage marketplace raise surfaced via SEC Form D filing",
+                    "notable_investors": [],
+                    "source": "SEC EDGAR",
+                    "source_url": source_url,
+                    "announced_date": announced,
+                    "website_url": "",
+                    "hq_location": hq_location,
+                }
+            )
+
+            if len(deals) >= 10:
+                break
+
+        return deals[:10]
+    except Exception as e:
+        print(f"⚠️  Warning: EDGAR fetch failed ({e}). Continuing without EDGAR deals.")
+        return []
 
 
 def load_seen_deals() -> set[str]:
@@ -622,6 +848,11 @@ if __name__ == "__main__":
     print(f"🔍  Fetching marketplace deals for {DATE_RANGE} …")
     data = fetch_deals()
     print(f"📦  Found {data.get('total_deals', 0)} deals · {data.get('total_capital', 'N/A')} total capital")
+
+    edgar_deals = fetch_edgar_deals()
+    if edgar_deals:
+        data["deals"] = (data.get("deals", []) or []) + edgar_deals
+        data["total_deals"] = len(data["deals"])
 
     geo_filtered = [
         d for d in (data.get("deals", []) or []) if hq_looks_us_or_canada(str(d.get("hq_location", "") or ""))

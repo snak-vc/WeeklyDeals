@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install anthropic gspread google-auth google-api-python-client
+        run: pip install anthropic gspread google-auth google-api-python-client requests
 
       - name: Generate & send newsletter
         env:
