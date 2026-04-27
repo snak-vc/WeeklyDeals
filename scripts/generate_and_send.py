@@ -310,10 +310,12 @@ Find ALL marketplace startup funding announcements and M&A activity published in
 A 'marketplace' connects buyers and sellers or two-sided networks: gig economy, B2B, consumer, real estate,
 fintech, healthcare, labor, freight, creator economy, and more. Cast the widest possible net.
 
-Sources: TechCrunch, The Information, Forbes, WSJ, NY Times, and company press releases.
+Sources: TechCrunch, The Information, Forbes, WSJ, NY Times, Axios, Bloomberg, Business Insider, Crunchbase News, VentureBeat, and company press releases.
 
 CRITICAL: Only include deals where the news article was published within the last 7 days.
 Never fabricate companies or deals.
+
+Include deals from any funding amount, including "Undisclosed" rounds (do not exclude them).
 
 Only include companies headquartered in the United States or Canada. Do not include deals from other countries. Include companies if you are not sure. Use common sense, if operations in a non-US or Canada company are mentioned in press it is probably not based in US or Canada.
 
