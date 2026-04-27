@@ -15,6 +15,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import imaplib
 import email
+from email.header import decode_header
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -618,8 +619,7 @@ def fetch_crunchbase_email_deals() -> list[str]:
         user = os.environ["GMAIL_ADDRESS"]
         password = os.environ["GMAIL_APP_PASSWORD"]
 
-        since_dt = datetime.utcnow() - timedelta(days=2)
-        since_str = since_dt.strftime("%d-%b-%Y")
+        since_date = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
 
         org_slugs: set[str] = set()
 
@@ -628,7 +628,7 @@ def fetch_crunchbase_email_deals() -> list[str]:
             imap.select("INBOX")
 
             # Use quoted criteria to match IMAP search semantics
-            criteria = f'(FROM "no-reply@crunchbase.com" SINCE "{since_str}")'
+            criteria = f'(FROM "email.crunchbase.com" SINCE "{since_date}")'
             status, data = imap.search(None, criteria)
             if status != "OK":
                 return []
@@ -641,6 +641,19 @@ def fetch_crunchbase_email_deals() -> list[str]:
 
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
+
+                subject_raw = msg.get("Subject", "") or ""
+                try:
+                    parts = decode_header(subject_raw)
+                    subject = ""
+                    for p, enc in parts:
+                        if isinstance(p, bytes):
+                            subject += p.decode(enc or "utf-8", errors="replace")
+                        else:
+                            subject += str(p)
+                except Exception:
+                    subject = str(subject_raw)
+                print(f"📧  Crunchbase email subject: {subject}")
 
                 html_parts: list[str] = []
                 if msg.is_multipart():
