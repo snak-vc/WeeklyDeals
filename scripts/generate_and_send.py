@@ -310,7 +310,11 @@ Find ALL marketplace startup funding announcements and M&A activity published in
 A 'marketplace' connects buyers and sellers or two-sided networks: gig economy, B2B, consumer, real estate,
 fintech, healthcare, labor, freight, creator economy, and more. Cast the widest possible net.
 
-Sources: TechCrunch, The Information, Forbes, WSJ, NY Times, Axios, Bloomberg, Business Insider, Crunchbase News, VentureBeat, and company press releases.
+Be inclusive — if a company connects two or more parties (consumers, businesses, service providers, buyers, sellers) in any way, include it. When in doubt, include the deal rather than exclude it.
+
+Search for terms like 'raises seed round', 'closes funding', 'secures investment', 'announces funding', 'series A', 'series B', 'acquired by', 'merger' combined with words like 'marketplace', 'platform', 'connects', 'two-sided'. Search broadly and return everything that could qualify.
+
+Sources: TechCrunch, The Information, Forbes, WSJ, NY Times, PR Newswire, Business Wire, GlobeNewswire, Axios, Bloomberg, VentureBeat, Crunchbase News, Business Insider, and company press releases.
 
 CRITICAL: Only include deals where the news article was published within the last 7 days.
 Never fabricate companies or deals.
